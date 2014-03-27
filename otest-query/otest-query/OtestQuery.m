@@ -24,7 +24,37 @@
 
 #import "DuplicateTestNameFix.h"
 #import "ParseTestName.h"
+#import "Swizzle.h"
 #import "TestingFramework.h"
+
+static BOOL shouldSwizzle;
+
+static id NSUserDefaults_ObjectForKey(id self, SEL sel, NSString *arg1)
+{
+  if (!shouldSwizzle) {
+    return objc_msgSend(self, @selector(__NSUserDefaults_objectForKey:), arg1);
+  }
+
+  if ([arg1 isEqual:@"SenTest"] || [arg1 isEqual:@"XCTest"]) {
+    return nil;
+  }
+
+  return objc_msgSend(self, @selector(__NSUserDefaults_objectForKey:), arg1);
+}
+
+static id NSUserDefaults_StringForKey(id self, SEL sel, id arg1)
+{
+  if (!shouldSwizzle) {
+    return objc_msgSend(self, @selector(__NSUserDefaults_stringForKey:), arg1);
+  }
+
+  if ([arg1 isEqual:@"SenTest"] || [arg1 isEqual:@"XCTest"]) {
+    return nil;
+  }
+
+  return objc_msgSend(self, @selector(__NSUserDefaults_stringForKey:), arg1);
+}
+
 
 @implementation OtestQuery
 
@@ -90,6 +120,17 @@
    [framework objectForKey:kTestingFrameworkFilterTestArgsKey]];
   [[NSUserDefaults standardUserDefaults] synchronize];
 
+  //  But we couldn't just clear [NSUserDefaults standardUserDefualts] as there is
+  // 'cfprefsd' daemon that caches the preferences and sometimes returns not
+  // cleared data.
+  //
+  // By swizzling [NSUserDefaults standardUserDefaults] and [NSUserDefaults *ForKey:]
+  // methods we will be sure that 'SenTest' and 'XCTest' will not read any data from
+  // the preferences and so we will prevent tests from running.
+  shouldSwizzle = YES;
+  XTSwizzleSelectorForFunction([NSUserDefaults class], @selector(objectForKey:), (IMP)NSUserDefaults_ObjectForKey);
+  XTSwizzleSelectorForFunction([NSUserDefaults class], @selector(stringForKey:), (IMP)NSUserDefaults_StringForKey);
+
   // We use dlopen() instead of -[NSBundle loadAndReturnError] because, if
   // something goes wrong, dlerror() gives us a much more helpful error message.
   if (dlopen([[bundle executablePath] UTF8String], RTLD_NOW) == NULL) {
@@ -98,6 +139,8 @@
   }
 
   [[NSBundle allFrameworks] makeObjectsPerformSelector:@selector(principalClass)];
+
+  shouldSwizzle = NO;
 
   ApplyDuplicateTestNameFix([framework objectForKey:kTestingFrameworkTestProbeClassName]);
 
